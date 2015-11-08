@@ -5,12 +5,24 @@
  *      Author: ed
  *
  *  Uses USI_VECTOR
+ *   Heavy use of msp430g2x21_usi_12.c - code example provided by TI for
+ * 	the implementation of the i2c state machine.
  *
  */
 
 #include <iic.h>
 
 #include <msp430.h>
+
+// I2C COMMS
+void Master_Transmit(void);
+char Master_Recieve(void);
+
+void Setup_USI_Master_TX(void);
+void Setup_USI_Master_RX(void);
+
+void Data_TX (void);
+void Data_RX (void);
 
 // State variables
 char I2C_State, Bytecount, Transmit = 0;

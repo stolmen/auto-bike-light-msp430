@@ -4,17 +4,24 @@
 #include <mpu6050.h>
 //#include <signal.h> 	// for GCC compiler. Used for ISR calls.
 
-
-
 // FIR filter coefficient
 #define K_FACTOR 0.1f
 
 // State machine coefficients
-#define THRESH ((int) 6000)
+#define THRESH ((int) 0)
 
+
+// Initial accelerations!
+// Divide by 16
+typedef struct accel_data_struct{
+	int x;
+	int y;
+	int z;
+} accel_data;
 
 static void allLEDOff();
 static void allLEDOn();
+static void readAccel(accel_data *data);
 
 
 /*
@@ -23,8 +30,7 @@ static void allLEDOn();
  * Edward Ong
  * September 2015
  * First re-write attempt.
- * Heavy use of msp430g2x21_usi_12.c - code example provided by TI for
- * 	the implementation of the i2c state machine.
+ *
  */
 
 int main(void) {
@@ -32,6 +38,10 @@ int main(void) {
     WDTCTL = WDTPW | WDTHOLD;	// Stop watchdog timer
 
     // *** Setup of registers and so on
+
+    // Allocate some space in RAM stack for some acceleration data.
+	accel_data initial_accel;
+    accel_data current_accel;
 
     // DCO setup
     DCOCTL = 0;                               // Select lowest DCOx and MODx settings
@@ -53,7 +63,7 @@ int main(void) {
 	P1SEL = 0;
 	P2SEL = 0;
 
-	// Set address to the MPU6050.
+	// Set address to the MPU6050 for IIC.
 	// This is the only slave device.
 	slave_i2c_address = MPU6050_I2C_ADDRESS << 1;
 
@@ -61,7 +71,8 @@ int main(void) {
 
 	/////// Initial configuration of MPU6050
 	iicWrite(MPU6050_I2C_MST_CTRL, 0x00);
-
+	// read initial orientation. initial_accel will not be written into at all any more.
+	readAccel(&initial_accel);
 	// configure and enabled interrupts on data ready
 	iicWrite(MPU6050_INT_PIN_CFG, MPU6050_LATCH_INT_EN);
 	iicWrite(MPU6050_INT_ENABLE, MPU6050_DATA_RDY_EN);
@@ -73,23 +84,16 @@ int main(void) {
 
 	char state = 1;
 
-	char z0 = 0;	// data bytes
-	char z1 = 0;
-	char y0 = 0;
-	char y1 = 0;
-	char x0 = 0;
-	char x1 = 0;
-
-	int x = 0;
-	int y = 0;
-	int z = 0;
-
 	// Kill all interrupts.
 	_BIC_SR(GIE);
 
-	P1IFG = 0;			// clear P1 IFG.
-
+	// Clear P1IFG and release MPU6050 int_status latch
+	P1IFG = 0;
 	iicRead(MPU6050_INT_STATUS);
+
+	// Disable all maskable interrupts, THEN un-mask interrupts on ACCEL_INT.
+	// This prevents jumping into the ISR immediately after un-masking.
+	// This behaviour results in the ISR being serviced BEFORE entering LPM3!! :(
 	_BIC_SR(GIE);
 	P1IE |= ACCEL_INT;		// enable interrupts
 
@@ -97,25 +101,14 @@ int main(void) {
 	while(1){
 		_BIS_SR(LPM3_bits + GIE);
 
-		// Read and construct 16-bit data
-		z0 = iicRead(MPU6050_ACCEL_ZOUT_L);
-		z1 = iicRead(MPU6050_ACCEL_ZOUT_H);
-		z = z0 + (z1 << 8);
-
-		y0 = iicRead(MPU6050_ACCEL_YOUT_L);
-		y1 = iicRead(MPU6050_ACCEL_YOUT_H);
-		y = y0 + (y1 << 8);
-
-		x0 = iicRead(MPU6050_ACCEL_XOUT_L);
-		x1 = iicRead(MPU6050_ACCEL_XOUT_H);
-		x = x0 + (x1 << 8);
+		readAccel(&current_accel);
 
 		// Kill all interrupts.
 		_BIC_SR(GIE);
 
 		// set new state.
 		// Hysteresis!
-		if (z > 0){
+		if (current_accel.z > 0){
 			state = 1;
 		} else {
 			state = 2;
@@ -144,6 +137,7 @@ int main(void) {
 	}
 }
 
+
 static void allLEDOff(){
 	P1OUT |= LED1_PIN + LED3_PIN;
 	P1OUT &= ~(LED2_PIN + LED4_PIN);
@@ -153,6 +147,23 @@ static void allLEDOn(){
 	P1OUT &= ~(LED1_PIN + LED3_PIN);
 }
 
+
+static void readAccel(accel_data *data){
+	// Read and construct 16-bit data
+	char x0,x1,y0,y1,z0,z1;
+
+	z0 = iicRead(MPU6050_ACCEL_ZOUT_L);
+	z1 = iicRead(MPU6050_ACCEL_ZOUT_H);
+	data->z = z0 + (z1 << 8);
+
+	y0 = iicRead(MPU6050_ACCEL_YOUT_L);
+	y1 = iicRead(MPU6050_ACCEL_YOUT_H);
+	data->y = y0 + (y1 << 8);
+
+	x0 = iicRead(MPU6050_ACCEL_XOUT_L);
+	x1 = iicRead(MPU6050_ACCEL_XOUT_H);
+	data->x = x0 + (x1 << 8);
+}
 
 // interrupts from GPIO
 #pragma vector=PORT1_VECTOR
