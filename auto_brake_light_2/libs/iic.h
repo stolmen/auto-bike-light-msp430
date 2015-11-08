@@ -16,7 +16,7 @@
 #ifndef IIC_H_
 #define IIC_H_
 
-// WRAPPERS FOR I2C COMMS FOR ADXL
+// WRAPPERS FOR I2C COMMS
 void iicWrite(char reg, char data);
 char iicRead(char reg);
 

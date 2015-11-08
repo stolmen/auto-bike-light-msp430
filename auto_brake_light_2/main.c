@@ -2,9 +2,6 @@
 #include <pcbv1.h>
 #include <iic.h>
 #include <mpu6050.h>
-#include <math.h>
-//#include <signal.h> 	// for GCC compiler. Used for ISR calls.
-
 // FIR filter coefficient
 #define K_FACTOR 0.1f
 
@@ -16,7 +13,6 @@
 
 // math!
 #define M_PI ((float) 3.14159265359)
-
 
 // Initial accelerations!
 // Divide by 16
@@ -37,6 +33,9 @@ static void allLEDOn();
 static void readAccel(accel_data *data);
 static void readGyro(gyro_data *data);
 static void update_z_comp(accel_data *adata, gyro_data *gdata, float *pitch);
+
+static float estimate_tan(float angle);
+static float estimate_arctan(float ratio);
 
 /*
  * main.c
@@ -88,8 +87,9 @@ int main(void) {
 	/////// Initial configuration of MPU6050
 	iicWrite(MPU6050_I2C_MST_CTRL, 0x00);
 	// read initial orientation, and then initialise the compensation amount
+	// note that the pitch is stored as a floating point number, in radians. (THink of a better way!)
 	readAccel(&initial_accel);
-	pitch = atan2(initial_accel.z, initial_accel.x);
+	pitch = estimate_arctan(((float) initial_accel.z) / ((float)initial_accel.x));	// theta = arctan(z/x)
 	// configure and enabled interrupts on data ready
 	iicWrite(MPU6050_INT_PIN_CFG, MPU6050_LATCH_INT_EN);
 	iicWrite(MPU6050_INT_ENABLE, MPU6050_DATA_RDY_EN);
@@ -125,12 +125,16 @@ int main(void) {
 		 * 3. Compensate for pitch by adding/subtracting from z axis acceleration
 		 * 4. Using compensated acceleration, determine the next state
 		 *
+		 *
+		 * Steps 2 and 3 are 'calculated' using the small angle approximations tan(x) = x and equivalently arctan(x) = x. (x in radians)
+		 *
+		 *
 		 */
 
 		readAccel(&current_accel);
 		readGyro(&current_gyro);
 		update_z_comp(&current_accel, &current_gyro, &pitch);
-		current_accel.z -= tan(pitch);
+		current_accel.z -= estimate_tan(pitch);
 
 		// Kill all interrupts.
 		_BIC_SR(GIE);
@@ -175,11 +179,25 @@ static void update_z_comp(accel_data *adata, gyro_data *gdata, float *pitch){
 	int forceMagnitudeApprox = abs(adata->x) + abs(adata->y) + abs(adata->z);
 
 	if ((forceMagnitudeApprox > 8192) && (forceMagnitudeApprox < 32768)){
-		pitchAcc = atan2((float)adata->z, (float)adata->x);
+		pitchAcc = estimate_arctan((float)adata->z / (float)adata->x);
 		*pitch = *pitch * 0.98 + pitchAcc * 0.02;
 	}
 }
 
+
+// // // Some estimation functions (turns out that they just convert between degrees and radians.
+
+// Input: floating point number in degrees
+// Output: a floating point number
+static float estimate_tan(float angle){
+	return(angle * M_PI / ((float) 180));
+}
+
+// Input: a floating point number
+// Output: floating point number in degrees
+static float estimate_arctan(float ratio){
+	return(ratio * ((float) 180) / M_PI);
+}
 
 
 static void allLEDOff(){
