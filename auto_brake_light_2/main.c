@@ -2,8 +2,8 @@
 #include <pcbv1.h>
 #include <iic.h>
 #include <mpu6050.h>
-#include <math.h>
-//#include <signal.h> 	// for GCC compiler. Used for ISR calls.
+#include "QmathLib.h"
+#include <signal.h> 	// for GCC compiler. Used for ISR calls.
 
 // FIR filter coefficient
 #define K_FACTOR 0.1f
@@ -19,17 +19,19 @@
 
 
 // Initial accelerations!
-// Divide by 16
+// Use QMath fixed point data formats
+// Q14 has range from -2 to 1.999 (accel +-2g)
+// Q7 has range from -256 to 255.992 (gyro +- 250 degrees/s)
 typedef struct accel_data_struct{
-	int x;
-	int y;
-	int z;
+	_q14 x;
+	_q14 y;
+	_q14 z;
 } accel_data;
 
 typedef struct gyro_data_struct{
-	int x;
-	int y;
-	int z;
+	_q7 x;
+	_q7 y;
+	_q7 z;
 } gyro_data;
 
 static void allLEDOff();
@@ -89,7 +91,7 @@ int main(void) {
 	iicWrite(MPU6050_I2C_MST_CTRL, 0x00);
 	// read initial orientation, and then initialise the compensation amount
 	readAccel(&initial_accel);
-	pitch = atan2(initial_accel.z, initial_accel.x);
+	pitch = _Q7atan2(initial_accel.z, initial_accel.x);
 	// configure and enabled interrupts on data ready
 	iicWrite(MPU6050_INT_PIN_CFG, MPU6050_LATCH_INT_EN);
 	iicWrite(MPU6050_INT_ENABLE, MPU6050_DATA_RDY_EN);
@@ -130,7 +132,7 @@ int main(void) {
 		readAccel(&current_accel);
 		readGyro(&current_gyro);
 		update_z_comp(&current_accel, &current_gyro, &pitch);
-		current_accel.z -= tan(pitch);
+		current_accel.z -= _Q14div(_Q14sin(pitch),_Q14cos(pitch));
 
 		// Kill all interrupts.
 		_BIC_SR(GIE);
@@ -198,15 +200,15 @@ static void readAccel(accel_data *data){
 
 	z0 = iicRead(MPU6050_ACCEL_ZOUT_L);
 	z1 = iicRead(MPU6050_ACCEL_ZOUT_H);
-	data->z = z0 + (z1 << 8);
+	data->z = _Q14((float) ((z0 + (z1 << 8)) / 16384));
 
 	y0 = iicRead(MPU6050_ACCEL_YOUT_L);
 	y1 = iicRead(MPU6050_ACCEL_YOUT_H);
-	data->y = y0 + (y1 << 8);
+	data->y = _Q14((float) ((y0 + (y1 << 8)) / 16384));
 
 	x0 = iicRead(MPU6050_ACCEL_XOUT_L);
 	x1 = iicRead(MPU6050_ACCEL_XOUT_H);
-	data->x = x0 + (x1 << 8);
+	data->x = _Q14((float) ((x0 + (x1 << 8)) / 16384));
 }
 
 static void readGyro(gyro_data *data){
@@ -215,15 +217,15 @@ static void readGyro(gyro_data *data){
 
 	z0 = iicRead(MPU6050_GYRO_ZOUT_L);
 	z1 = iicRead(MPU6050_GYRO_ZOUT_H);
-	data->z = z0 + (z1 << 8);
+	data->z = _Q7((float) ((z0 + (z1 << 8)) / 131));
 
 	y0 = iicRead(MPU6050_GYRO_YOUT_L);
 	y1 = iicRead(MPU6050_GYRO_YOUT_H);
-	data->y = y0 + (y1 << 8);
+	data->y = _Q7((float) ((y0 + (y1 << 8)) / 131));
 
 	x0 = iicRead(MPU6050_GYRO_XOUT_L);
 	x1 = iicRead(MPU6050_GYRO_XOUT_H);
-	data->x = x0 + (x1 << 8);
+	data->x = _Q7((float) ((x0 + (x1 << 8)) / 131));
 }
 
 // interrupts from GPIO
