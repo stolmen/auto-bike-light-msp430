@@ -2,6 +2,7 @@
 #include <pcbv1.h>
 #include <iic.h>
 #include <mpu6050.h>
+#include <math.h>
 //#include <signal.h> 	// for GCC compiler. Used for ISR calls.
 
 // FIR filter coefficient
@@ -9,6 +10,12 @@
 
 // State machine coefficients
 #define THRESH ((int) 0)
+
+#define GYROSCOPE_SENSITIVITY ((float) 65.536)		// in LSB/(rad/s)
+#define UPDATE_INTERVAL 40							// update interval of data in milliseconds
+
+// math!
+#define M_PI ((float) 3.14159265359)
 
 
 // Initial accelerations!
@@ -19,10 +26,17 @@ typedef struct accel_data_struct{
 	int z;
 } accel_data;
 
+typedef struct gyro_data_struct{
+	int x;
+	int y;
+	int z;
+} gyro_data;
+
 static void allLEDOff();
 static void allLEDOn();
 static void readAccel(accel_data *data);
-
+static void readGyro(gyro_data *data);
+static void update_z_comp(accel_data *adata, gyro_data *gdata, float *pitch);
 
 /*
  * main.c
@@ -39,9 +53,11 @@ int main(void) {
 
     // *** Setup of registers and so on
 
-    // Allocate some space in RAM stack for some acceleration data.
+    // Allocate some space in RAM stack for some data
 	accel_data initial_accel;
     accel_data current_accel;
+    gyro_data current_gyro; 	// this is used in the pitch-compensation algorithm
+    float pitch;			// pitch in radians
 
     // DCO setup
     DCOCTL = 0;                               // Select lowest DCOx and MODx settings
@@ -71,14 +87,15 @@ int main(void) {
 
 	/////// Initial configuration of MPU6050
 	iicWrite(MPU6050_I2C_MST_CTRL, 0x00);
-	// read initial orientation. initial_accel will not be written into at all any more.
+	// read initial orientation, and then initialise the compensation amount
 	readAccel(&initial_accel);
+	pitch = atan2(initial_accel.z, initial_accel.x);
 	// configure and enabled interrupts on data ready
 	iicWrite(MPU6050_INT_PIN_CFG, MPU6050_LATCH_INT_EN);
 	iicWrite(MPU6050_INT_ENABLE, MPU6050_DATA_RDY_EN);
 	// wake from sleep, set sample and sleep mode
 	iicWrite(MPU6050_PWR_MGMT_1, MPU6050_CYCLE);
-	iicWrite(MPU6050_PWR_MGMT_2, MPU6050_LP_WAKE_CTRL_2 + MPU6050_STBY_XG + MPU6050_STBY_YG + MPU6050_STBY_ZG);
+	iicWrite(MPU6050_PWR_MGMT_2, MPU6050_LP_WAKE_CTRL_2);
 
 	allLEDOff();
 
@@ -101,7 +118,19 @@ int main(void) {
 	while(1){
 		_BIS_SR(LPM3_bits + GIE);
 
+		// Signal flow:
+		/*
+		 * 1. Read accel and gyro data into current_gyro and current_accel
+		 * 2. Using the complementary filter described in http://www.pieter-jan.com/node/11, calculate new pitch
+		 * 3. Compensate for pitch by adding/subtracting from z axis acceleration
+		 * 4. Using compensated acceleration, determine the next state
+		 *
+		 */
+
 		readAccel(&current_accel);
+		readGyro(&current_gyro);
+		update_z_comp(&current_accel, &current_gyro, &pitch);
+		current_accel.z -= tan(pitch);
 
 		// Kill all interrupts.
 		_BIC_SR(GIE);
@@ -137,6 +166,21 @@ int main(void) {
 	}
 }
 
+// Update curr_z_comp using data from accel and gyro, and the current compensation amount.
+// Algorithm courtesy of http://www.pieter-jan.com/node/11
+static void update_z_comp(accel_data *adata, gyro_data *gdata, float *pitch){
+	float pitchAcc;
+
+	*pitch += ((float)gdata->z / GYROSCOPE_SENSITIVITY) * UPDATE_INTERVAL; // Angle around the X-axis
+	int forceMagnitudeApprox = abs(adata->x) + abs(adata->y) + abs(adata->z);
+
+	if ((forceMagnitudeApprox > 8192) && (forceMagnitudeApprox < 32768)){
+		pitchAcc = atan2((float)adata->z, (float)adata->x);
+		*pitch = *pitch * 0.98 + pitchAcc * 0.02;
+	}
+}
+
+
 
 static void allLEDOff(){
 	P1OUT |= LED1_PIN + LED3_PIN;
@@ -162,6 +206,23 @@ static void readAccel(accel_data *data){
 
 	x0 = iicRead(MPU6050_ACCEL_XOUT_L);
 	x1 = iicRead(MPU6050_ACCEL_XOUT_H);
+	data->x = x0 + (x1 << 8);
+}
+
+static void readGyro(gyro_data *data){
+	// Read and construct 16-bit data
+	char x0,x1,y0,y1,z0,z1;
+
+	z0 = iicRead(MPU6050_GYRO_ZOUT_L);
+	z1 = iicRead(MPU6050_GYRO_ZOUT_H);
+	data->z = z0 + (z1 << 8);
+
+	y0 = iicRead(MPU6050_GYRO_YOUT_L);
+	y1 = iicRead(MPU6050_GYRO_YOUT_H);
+	data->y = y0 + (y1 << 8);
+
+	x0 = iicRead(MPU6050_GYRO_XOUT_L);
+	x1 = iicRead(MPU6050_GYRO_XOUT_H);
 	data->x = x0 + (x1 << 8);
 }
 
