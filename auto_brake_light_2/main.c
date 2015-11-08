@@ -8,11 +8,11 @@
 // State machine coefficients
 #define THRESH ((int) 0)
 
-#define GYROSCOPE_SENSITIVITY ((float) 65.536)		// in LSB/(rad/s)
-#define UPDATE_INTERVAL 40							// update interval of data in milliseconds
+#define GYROSCOPE_SENSITIVITY 65.536f		// in LSB/(rad/s)
+#define UPDATE_INTERVAL 40.0f							// update interval of data in milliseconds
 
 // math!
-#define M_PI ((float) 3.14159265359)
+#define M_PI 3.14159265359f
 
 // Initial accelerations!
 // Divide by 16
@@ -28,10 +28,19 @@ typedef struct gyro_data_struct{
 	int z;
 } gyro_data;
 
+typedef struct three_axis_read_buffer_struct{
+	char x0;
+	char x1;
+	char y0;
+	char y1;
+	char z0;
+	char z1;
+} three_axis_read_buffer;
+
 static void allLEDOff();
 static void allLEDOn();
-static void readAccel(accel_data *data);
-static void readGyro(gyro_data *data);
+static void readAccel(accel_data *data, three_axis_read_buffer *buffer);
+static void readGyro(gyro_data *data, three_axis_read_buffer *buffer);
 static void update_z_comp(accel_data *adata, gyro_data *gdata, float *pitch);
 
 static float estimate_tan(float angle);
@@ -56,7 +65,9 @@ int main(void) {
 	accel_data initial_accel;
     accel_data current_accel;
     gyro_data current_gyro; 	// this is used in the pitch-compensation algorithm
+    three_axis_read_buffer buffer;
     float pitch;			// pitch in radians
+    float comp_z;			// compensated z
 
     // DCO setup
     DCOCTL = 0;                               // Select lowest DCOx and MODx settings
@@ -88,7 +99,7 @@ int main(void) {
 	iicWrite(MPU6050_I2C_MST_CTRL, 0x00);
 	// read initial orientation, and then initialise the compensation amount
 	// note that the pitch is stored as a floating point number, in radians. (THink of a better way!)
-	readAccel(&initial_accel);
+	readAccel(&initial_accel, &buffer);
 	pitch = estimate_arctan(((float) initial_accel.z) / ((float)initial_accel.x));	// theta = arctan(z/x)
 	// configure and enabled interrupts on data ready
 	iicWrite(MPU6050_INT_PIN_CFG, MPU6050_LATCH_INT_EN);
@@ -131,17 +142,17 @@ int main(void) {
 		 *
 		 */
 
-		readAccel(&current_accel);
-		readGyro(&current_gyro);
+		readAccel(&current_accel, &buffer);
+		readGyro(&current_gyro, &buffer);
 		update_z_comp(&current_accel, &current_gyro, &pitch);
-		current_accel.z -= estimate_tan(pitch);
+		comp_z = ((float)current_accel.z) - estimate_tan(pitch);
 
 		// Kill all interrupts.
 		_BIC_SR(GIE);
 
 		// set new state.
 		// Hysteresis!
-		if (current_accel.z > 0){
+		if (comp_z > 0.0f){
 			state = 1;
 		} else {
 			state = 2;
@@ -180,7 +191,7 @@ static void update_z_comp(accel_data *adata, gyro_data *gdata, float *pitch){
 
 	if ((forceMagnitudeApprox > 8192) && (forceMagnitudeApprox < 32768)){
 		pitchAcc = estimate_arctan((float)adata->z / (float)adata->x);
-		*pitch = *pitch * 0.98 + pitchAcc * 0.02;
+		*pitch = *pitch * 0.98f + pitchAcc * 0.02f;
 	}
 }
 
@@ -209,39 +220,33 @@ static void allLEDOn(){
 	P1OUT &= ~(LED1_PIN + LED3_PIN);
 }
 
+static void readAccel(accel_data *data, three_axis_read_buffer *buffer){
+	buffer->z0 = iicRead(MPU6050_ACCEL_ZOUT_L);
+	buffer->z1 = iicRead(MPU6050_ACCEL_ZOUT_H);
+	data->z = buffer->z0 + (buffer->z1 << 8);
 
-static void readAccel(accel_data *data){
-	// Read and construct 16-bit data
-	char x0,x1,y0,y1,z0,z1;
+	buffer->y0 = iicRead(MPU6050_ACCEL_YOUT_L);
+	buffer->y1 = iicRead(MPU6050_ACCEL_YOUT_H);
+	data->y = buffer->y0 + (buffer->y1 << 8);
 
-	z0 = iicRead(MPU6050_ACCEL_ZOUT_L);
-	z1 = iicRead(MPU6050_ACCEL_ZOUT_H);
-	data->z = z0 + (z1 << 8);
-
-	y0 = iicRead(MPU6050_ACCEL_YOUT_L);
-	y1 = iicRead(MPU6050_ACCEL_YOUT_H);
-	data->y = y0 + (y1 << 8);
-
-	x0 = iicRead(MPU6050_ACCEL_XOUT_L);
-	x1 = iicRead(MPU6050_ACCEL_XOUT_H);
-	data->x = x0 + (x1 << 8);
+	buffer->x0 = iicRead(MPU6050_ACCEL_XOUT_L);
+	buffer->x1 = iicRead(MPU6050_ACCEL_XOUT_H);
+	data->x = buffer->x0 + (buffer->x1 << 8);
 }
 
-static void readGyro(gyro_data *data){
+static void readGyro(gyro_data *data, three_axis_read_buffer *buffer){
 	// Read and construct 16-bit data
-	char x0,x1,y0,y1,z0,z1;
+	buffer->z0 = iicRead(MPU6050_GYRO_ZOUT_L);
+	buffer->z1 = iicRead(MPU6050_GYRO_ZOUT_H);
+	data->z = buffer->z0 + (buffer->z1 << 8);
 
-	z0 = iicRead(MPU6050_GYRO_ZOUT_L);
-	z1 = iicRead(MPU6050_GYRO_ZOUT_H);
-	data->z = z0 + (z1 << 8);
+	buffer->y0 = iicRead(MPU6050_GYRO_YOUT_L);
+	buffer->y1 = iicRead(MPU6050_GYRO_YOUT_H);
+	data->y = buffer->y0 + (buffer->y1 << 8);
 
-	y0 = iicRead(MPU6050_GYRO_YOUT_L);
-	y1 = iicRead(MPU6050_GYRO_YOUT_H);
-	data->y = y0 + (y1 << 8);
-
-	x0 = iicRead(MPU6050_GYRO_XOUT_L);
-	x1 = iicRead(MPU6050_GYRO_XOUT_H);
-	data->x = x0 + (x1 << 8);
+	buffer->x0 = iicRead(MPU6050_GYRO_XOUT_L);
+	buffer->x1 = iicRead(MPU6050_GYRO_XOUT_H);
+	data->x = buffer->x0 + (buffer->x1 << 8);
 }
 
 // interrupts from GPIO
