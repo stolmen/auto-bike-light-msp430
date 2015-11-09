@@ -8,7 +8,7 @@
 // State machine coefficients
 #define THRESH ((int) 0)
 
-#define GYROSCOPE_SENSITIVITY 65.536f		// in LSB/(rad/s)
+#define GYROSCOPE_SENSITIVITY 65.536f		// in LSB/(deg/s)
 #define UPDATE_INTERVAL 40.0f							// update interval of data in milliseconds
 
 // math!
@@ -23,9 +23,9 @@ typedef struct accel_data_struct{
 } accel_data;
 
 typedef struct gyro_data_struct{
-	int x;
-	int y;
-	int z;
+	float x;
+	float y;
+	float z;
 } gyro_data;
 
 typedef struct three_axis_read_buffer_struct{
@@ -42,9 +42,6 @@ static void allLEDOn();
 static void readAccel(accel_data *data, three_axis_read_buffer *buffer);
 static void readGyro(gyro_data *data, three_axis_read_buffer *buffer);
 static void update_z_comp(accel_data *adata, gyro_data *gdata, float *pitch);
-
-static float estimate_tan(float angle);
-static float estimate_arctan(float ratio);
 
 /*
  * main.c
@@ -100,7 +97,7 @@ int main(void) {
 	// read initial orientation, and then initialise the compensation amount
 	// note that the pitch is stored as a floating point number, in radians. (THink of a better way!)
 	readAccel(&initial_accel, &buffer);
-	pitch = estimate_arctan(((float) initial_accel.z) / ((float)initial_accel.x));	// theta = arctan(z/x)
+	pitch = ((float)initial_accel.z) / ((float)initial_accel.x);	// theta = arctan(z/x) ~= z/x
 	// configure and enabled interrupts on data ready
 	iicWrite(MPU6050_INT_PIN_CFG, MPU6050_LATCH_INT_EN);
 	iicWrite(MPU6050_INT_ENABLE, MPU6050_DATA_RDY_EN);
@@ -145,7 +142,7 @@ int main(void) {
 		readAccel(&current_accel, &buffer);
 		readGyro(&current_gyro, &buffer);
 		update_z_comp(&current_accel, &current_gyro, &pitch);
-		comp_z = ((float)current_accel.z) - estimate_tan(pitch);
+		comp_z = ((float)current_accel.z) - pitch;
 
 		// Kill all interrupts.
 		_BIC_SR(GIE);
@@ -186,31 +183,17 @@ int main(void) {
 static void update_z_comp(accel_data *adata, gyro_data *gdata, float *pitch){
 	float pitchAcc;
 
-	*pitch += ((float)gdata->z / GYROSCOPE_SENSITIVITY) * UPDATE_INTERVAL; // Angle around the X-axis
+	*pitch += ((float)gdata->z) * UPDATE_INTERVAL; // Angle around the X-axis
 	int forceMagnitudeApprox = abs(adata->x) + abs(adata->y) + abs(adata->z);
 
 	if ((forceMagnitudeApprox > 8192) && (forceMagnitudeApprox < 32768)){
-		pitchAcc = estimate_arctan((float)adata->z / (float)adata->x);
+		pitchAcc = ((float)adata->z) / ((float)adata->x);
 		*pitch = *pitch * 0.98f + pitchAcc * 0.02f;
 	}
 }
 
 
 // // // Some estimation functions (turns out that they just convert between degrees and radians.
-
-// Input: floating point number in degrees
-// Output: a floating point number
-static float estimate_tan(float angle){
-	return(angle * M_PI / ((float) 180));
-}
-
-// Input: a floating point number
-// Output: floating point number in degrees
-static float estimate_arctan(float ratio){
-	return(ratio * ((float) 180) / M_PI);
-}
-
-
 static void allLEDOff(){
 	P1OUT |= LED1_PIN + LED3_PIN;
 	P1OUT &= ~(LED2_PIN + LED4_PIN);
@@ -235,14 +218,22 @@ static void readAccel(accel_data *data, three_axis_read_buffer *buffer){
 }
 
 static void readGyro(gyro_data *data, three_axis_read_buffer *buffer){
-	// Read and construct 16-bit data
+	/*
+	 * For each data stream:
+	 * 1. Read bytes into buffer
+	 * 2. Construct 16 bit word
+	 * 3. Immediately transform into radians.
+	 */
+
 	buffer->z0 = iicRead(MPU6050_GYRO_ZOUT_L);
 	buffer->z1 = iicRead(MPU6050_GYRO_ZOUT_H);
-	data->z = buffer->z0 + (buffer->z1 << 8);
+	data->z = ((float) (buffer->z0 + (buffer->z1 << 8))) / GYROSCOPE_SENSITIVITY * M_PI / 180;
 
-	buffer->y0 = iicRead(MPU6050_GYRO_YOUT_L);
-	buffer->y1 = iicRead(MPU6050_GYRO_YOUT_H);
-	data->y = buffer->y0 + (buffer->y1 << 8);
+	// y gyro not really required.
+
+	//buffer->y0 = iicRead(MPU6050_GYRO_YOUT_L);
+	//buffer->y1 = iicRead(MPU6050_GYRO_YOUT_H);
+	//data->y = buffer->y0 + (buffer->y1 << 8);
 
 	buffer->x0 = iicRead(MPU6050_GYRO_XOUT_L);
 	buffer->x1 = iicRead(MPU6050_GYRO_XOUT_H);
