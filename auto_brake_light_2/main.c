@@ -4,8 +4,10 @@
 #include <mpu6050.h>
 //#include <signal.h> 	// for GCC compiler. Used for ISR calls.
 
-// FIR filter coefficient
-#define K_FACTOR 0.1f
+// filter coefficients
+#define ACCEL_COEFF 
+#define COMP_COEFF
+
 
 // State machine coefficients
 #define THRESH 2000
@@ -93,7 +95,8 @@ int main(void) {
 
 	// Declare some vars
 	char state = 1;
-	int comp_z;
+	int comp_z = 0; 
+    int comp_x = 0;
 	int cur_z = 0;
 	update_pitch=0;
 
@@ -112,11 +115,13 @@ int main(void) {
 	/*
 	 * The flow:
 	 * 1. Update accelerometer reading variables
-	 * 2. Perform pitch compensation on z (this only happens every now and then)
-	 * 3. Parse compensated z into state machine
-	 * 4. Quick LPF
-	 * 4. LEDs will light up depending on the state
-	 * 5. Wait for more accelerometer data in LPM3. Then repeat!
+     * 2. (Periodically) update pitch compensation amount
+	 * 2. Pitch compensation
+     * 3. Bump compensation
+	 * 4. Smoothing (two-sample weighted average)
+	 * 5. Parse z into the state machine
+	 * 6. LEDs will light up depending on the state
+	 * 7. Wait for more accelerometer data in LPM3. Then repeat!
 	 */
 	while(1){
 		_BIS_SR(LPM3_bits + GIE);
@@ -130,17 +135,20 @@ int main(void) {
 			/*
 			 * Periodic pitch compensation.
 			 * 1. Calculate current compensation amount from z accel reading.
-			 * 2. Update compensation amount through averaging.
+             * 1a. Also update comp_x for fast compensation.
+			 * 2. Update smoothed compensation amount (two-sample weighted average).
 			 * 3. Reset update_pitch.
 			 */
-
-			comp_z = (comp_z/16*15) + (current_accel.z/16);
-
+            comp_x = (comp_x/COMP_COEFF*(COMP_COEFF-1)) + (current_accel.x/COMP_COEFF);
+			comp_z = (comp_z/COMP_COEFF*(COMP_COEFF-1)) + (current_accel.z/COMP_COEFF);
+            
 			update_pitch = 0;
 		}
 
 		current_accel.z = current_accel.z - comp_z;
-		cur_z = cur_z/8*7 + current_accel.z/8;
+        current_accel.z = comp_z / comp_x * current_accel.z;    // z_n = tan(theta) * z = g_z/g_x*z
+        
+		cur_z = cur_z/ACCEL_COEFF*(ACCEL_COEFF-1) + current_accel.z/ACCEL_COEFF;
 
 		// set new state.
 		// Hysteresis!
@@ -192,15 +200,20 @@ static void readAccel(accel_data *data){
 	z0 = iicRead(MPU6050_ACCEL_ZOUT_L);
 	z1 = iicRead(MPU6050_ACCEL_ZOUT_H);
 	data->z = z0 + (z1 << 8);
-	/*
+
+    /*
 	y0 = iicRead(MPU6050_ACCEL_YOUT_L);
 	y1 = iicRead(MPU6050_ACCEL_YOUT_H);
 	data->y = y0 + (y1 << 8);
-
+    */
+    
 	x0 = iicRead(MPU6050_ACCEL_XOUT_L);
 	x1 = iicRead(MPU6050_ACCEL_XOUT_H);
 	data->x = x0 + (x1 << 8);*/
 }
+
+
+static void 
 
 /*
  * Port 1 ISR
