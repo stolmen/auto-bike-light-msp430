@@ -5,14 +5,13 @@
 //#include <signal.h> 	// for GCC compiler. Used for ISR calls.
 
 // filter coefficients
-#define ACCEL_COEFF 
-#define COMP_COEFF
+#define ACCEL_COEFF 8
+#define COMP_COEFF 16
 
+#define DETECTION_THRESHOLD 2000
 
-// State machine coefficients
-#define THRESH 2000
-
-#define ACCEL_SENS_F 16384.0f		// ACCELEROMETER SENSITIVITY FLOAT
+// smoothing
+#define SMOOTH(_prev, _curr, _coeff) ((_prev/_coeff*(_coeff-1)) + (_curr/_coeff))
 
 // Initial accelerations!
 // Divide by 16
@@ -137,22 +136,21 @@ int main(void) {
 			 * 1. Calculate current compensation amount from z accel reading.
              * 1a. Also update comp_x for fast compensation.
 			 * 2. Update smoothed compensation amount (two-sample weighted average).
-			 * 3. Reset update_pitch.
+			 * 3. Reset update_pitch flag.
 			 */
-            comp_x = (comp_x/COMP_COEFF*(COMP_COEFF-1)) + (current_accel.x/COMP_COEFF);
-			comp_z = (comp_z/COMP_COEFF*(COMP_COEFF-1)) + (current_accel.z/COMP_COEFF);
+            comp_x = SMOOTH(comp_x, current_accel.x, COMP_COEFF);
+            comp_z = SMOOTH(comp_z, current_accel.z, COMP_COEFF);
             
 			update_pitch = 0;
 		}
 
-		current_accel.z = current_accel.z - comp_z;
-        current_accel.z = comp_z / comp_x * current_accel.z;    // z_n = tan(theta) * z = g_z/g_x*z
-        
-		cur_z = cur_z/ACCEL_COEFF*(ACCEL_COEFF-1) + current_accel.z/ACCEL_COEFF;
+		current_accel.z -= comp_z;
+        current_accel.z -= comp_z / comp_x * current_accel.z;    // z_n = tan(theta) * z = g_z/g_x*z
+        cur_z = SMOOTH(cur_z, current_accel.z, ACCEL_COEFF)
 
 		// set new state.
 		// Hysteresis!
-		if (abs(cur_z) > THRESH){
+		if (abs(cur_z) > DETECTION_THRESHOLD){
 			state = 1;
 		} else {
 			state = 2;
