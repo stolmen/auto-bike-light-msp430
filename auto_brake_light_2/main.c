@@ -10,9 +10,6 @@
 
 #define DETECTION_THRESHOLD 2000
 
-// smoothing
-#define SMOOTH(_prev, _curr, _coeff) ((_prev/_coeff*(_coeff-1)) + (_curr/_coeff))
-
 // Initial accelerations!
 // Divide by 16
 typedef struct accel_data_struct{
@@ -24,6 +21,7 @@ typedef struct accel_data_struct{
 static void allLEDOff();
 static void allLEDOn();
 static void readAccel(accel_data *data);
+static int smoothFilter(int prev, int curr, int coeff);
 
 char update_pitch;
 
@@ -102,7 +100,7 @@ int main(void) {
 	// Timer setup
 	CCTL0 = CCIE;                             // CCR0 interrupt enabled
 	CCR0 = 50000;
-	TACTL = TASSEL_2 + MC_2 + ID_3;                  // SMCLK, contmode, /8
+	TACTL = TASSEL_2 + MC_2 + ID_2;                  // SMCLK, contmode, /4
 
 	// Disable all maskable interrupts, THEN un-mask interrupts on ACCEL_INT.
 	// This prevents jumping into the ISR immediately after un-masking.
@@ -138,15 +136,15 @@ int main(void) {
 			 * 2. Update smoothed compensation amount (two-sample weighted average).
 			 * 3. Reset update_pitch flag.
 			 */
-            comp_x = SMOOTH(comp_x, current_accel.x, COMP_COEFF);
-            comp_z = SMOOTH(comp_z, current_accel.z, COMP_COEFF);
+            comp_x = smoothFilter(comp_x, current_accel.x, COMP_COEFF);
+            comp_z = smoothFilter(comp_z, current_accel.z, COMP_COEFF);
             
 			update_pitch = 0;
 		}
 
 		current_accel.z -= comp_z;
         current_accel.z -= comp_z / comp_x * current_accel.z;    // z_n = tan(theta) * z = g_z/g_x*z
-        cur_z = SMOOTH(cur_z, current_accel.z, ACCEL_COEFF)
+        cur_z = smoothFilter(cur_z, current_accel.z, ACCEL_COEFF);
 
 		// set new state.
 		// Hysteresis!
@@ -185,6 +183,11 @@ static void allLEDOn(){
 	//P1OUT &= ~(LED1_PIN + LED3_PIN);
 }
 
+static int smoothFilter(int prev, int curr, int coeff){
+	return ((prev/coeff*(coeff-1)) + (curr/coeff));
+}
+
+
 /*
  * readAccel
  * Updates 'data' struct with new accel readings.
@@ -193,7 +196,9 @@ static void allLEDOn(){
  * 2. Construct 2 byte word and store into struct
  */
 static void readAccel(accel_data *data){
-	char x0,x1,y0,y1,z0,z1;
+	char x0,x1;
+	// char y0,y1;
+	char z0,z1;
 
 	z0 = iicRead(MPU6050_ACCEL_ZOUT_L);
 	z1 = iicRead(MPU6050_ACCEL_ZOUT_H);
@@ -207,11 +212,9 @@ static void readAccel(accel_data *data){
     
 	x0 = iicRead(MPU6050_ACCEL_XOUT_L);
 	x1 = iicRead(MPU6050_ACCEL_XOUT_H);
-	data->x = x0 + (x1 << 8);*/
+	data->x = x0 + (x1 << 8);
 }
 
-
-static void 
 
 /*
  * Port 1 ISR
