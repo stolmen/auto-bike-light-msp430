@@ -4,18 +4,26 @@
 #include <mpu6050.h>
 //#include <signal.h> 	// for GCC compiler. Used for ISR calls.
 
+// filter coefficients
+#define ACCEL_COEFF 8
+#define COMP_COEFF 16
 
+#define DETECTION_THRESHOLD 2000
 
-// FIR filter coefficient
-#define K_FACTOR 0.1f
-
-// State machine coefficients
-#define THRESH ((int) 6000)
-
+// Initial accelerations!
+// Divide by 16
+typedef struct accel_data_struct{
+	int x;
+	int y;
+	int z;
+} accel_data;
 
 static void allLEDOff();
 static void allLEDOn();
+static void readAccel(accel_data *data);
+static int smoothFilter(int prev, int curr, int coeff);
 
+char update_pitch;
 
 /*
  * main.c
@@ -23,8 +31,7 @@ static void allLEDOn();
  * Edward Ong
  * September 2015
  * First re-write attempt.
- * Heavy use of msp430g2x21_usi_12.c - code example provided by TI for
- * 	the implementation of the i2c state machine.
+ *
  */
 
 int main(void) {
@@ -32,6 +39,10 @@ int main(void) {
     WDTCTL = WDTPW | WDTHOLD;	// Stop watchdog timer
 
     // *** Setup of registers and so on
+
+    // Allocate some space in RAM stack for some acceleration data.
+	accel_data initial_accel;
+    accel_data current_accel;
 
     // DCO setup
     DCOCTL = 0;                               // Select lowest DCOx and MODx settings
@@ -53,7 +64,7 @@ int main(void) {
 	P1SEL = 0;
 	P2SEL = 0;
 
-	// Set address to the MPU6050.
+	// Set address to the MPU6050 for IIC.
 	// This is the only slave device.
 	slave_i2c_address = MPU6050_I2C_ADDRESS << 1;
 
@@ -61,7 +72,8 @@ int main(void) {
 
 	/////// Initial configuration of MPU6050
 	iicWrite(MPU6050_I2C_MST_CTRL, 0x00);
-
+	// read initial orientation. initial_accel will not be written into at all any more.
+	readAccel(&initial_accel);
 	// configure and enabled interrupts on data ready
 	iicWrite(MPU6050_INT_PIN_CFG, MPU6050_LATCH_INT_EN);
 	iicWrite(MPU6050_INT_ENABLE, MPU6050_DATA_RDY_EN);
@@ -71,51 +83,72 @@ int main(void) {
 
 	allLEDOff();
 
-	char state = 1;
-
-	char z0 = 0;	// data bytes
-	char z1 = 0;
-	char y0 = 0;
-	char y1 = 0;
-	char x0 = 0;
-	char x1 = 0;
-
-	int x = 0;
-	int y = 0;
-	int z = 0;
-
 	// Kill all interrupts.
 	_BIC_SR(GIE);
 
-	P1IFG = 0;			// clear P1 IFG.
-
+	// Clear P1IFG and release MPU6050 int_status latch
+	P1IFG = 0;
 	iicRead(MPU6050_INT_STATUS);
+
+	// Declare some vars
+	char state = 1;
+	int comp_z = 0; 
+    int comp_x = 0;
+	int cur_z = 0;
+	update_pitch=0;
+
+	// Timer setup
+	CCTL0 = CCIE;                             // CCR0 interrupt enabled
+	CCR0 = 50000;
+	TACTL = TASSEL_2 + MC_2 + ID_2;                  // SMCLK, contmode, /4
+
+	// Disable all maskable interrupts, THEN un-mask interrupts on ACCEL_INT.
+	// This prevents jumping into the ISR immediately after un-masking.
+	// This behaviour results in the ISR being serviced BEFORE entering LPM3!! :(
 	_BIC_SR(GIE);
 	P1IE |= ACCEL_INT;		// enable interrupts
 
 	// Begin primary function state machine.
+	/*
+	 * The flow:
+	 * 1. Update accelerometer reading variables
+     * 2. (Periodically) update pitch compensation amount
+	 * 2. Pitch compensation
+     * 3. Bump compensation
+	 * 4. Smoothing (two-sample weighted average)
+	 * 5. Parse z into the state machine
+	 * 6. LEDs will light up depending on the state
+	 * 7. Wait for more accelerometer data in LPM3. Then repeat!
+	 */
 	while(1){
 		_BIS_SR(LPM3_bits + GIE);
-
-		// Read and construct 16-bit data
-		z0 = iicRead(MPU6050_ACCEL_ZOUT_L);
-		z1 = iicRead(MPU6050_ACCEL_ZOUT_H);
-		z = z0 + (z1 << 8);
-
-		y0 = iicRead(MPU6050_ACCEL_YOUT_L);
-		y1 = iicRead(MPU6050_ACCEL_YOUT_H);
-		y = y0 + (y1 << 8);
-
-		x0 = iicRead(MPU6050_ACCEL_XOUT_L);
-		x1 = iicRead(MPU6050_ACCEL_XOUT_H);
-		x = x0 + (x1 << 8);
 
 		// Kill all interrupts.
 		_BIC_SR(GIE);
 
+		readAccel(&current_accel);
+
+		if (update_pitch){
+			/*
+			 * Periodic pitch compensation.
+			 * 1. Calculate current compensation amount from z accel reading.
+             * 1a. Also update comp_x for fast compensation.
+			 * 2. Update smoothed compensation amount (two-sample weighted average).
+			 * 3. Reset update_pitch flag.
+			 */
+            comp_x = smoothFilter(comp_x, current_accel.x, COMP_COEFF);
+            comp_z = smoothFilter(comp_z, current_accel.z, COMP_COEFF);
+            
+			update_pitch = 0;
+		}
+
+		current_accel.z -= comp_z;
+        current_accel.z -= comp_z / comp_x * current_accel.z;    // z_n = tan(theta) * z = g_z/g_x*z
+        cur_z = smoothFilter(cur_z, current_accel.z, ACCEL_COEFF);
+
 		// set new state.
 		// Hysteresis!
-		if (z > 0){
+		if (abs(cur_z) > DETECTION_THRESHOLD){
 			state = 1;
 		} else {
 			state = 2;
@@ -124,14 +157,10 @@ int main(void) {
 		// Only wakes up when interrupt is received from PORT 1.
 		switch(state){
 		case 1:
-			// All LEDs on!
-			P1OUT |= LED2_PIN + LED4_PIN;
-			P1OUT &= ~(LED1_PIN + LED3_PIN);
+			allLEDOn();
 			break;
 		case 2:
-			// Turn all LEDs off!
-			P1OUT |= LED1_PIN + LED3_PIN;
-			P1OUT &= ~(LED2_PIN + LED4_PIN);
+			allLEDOff();
 			break;
 		}
 
@@ -144,21 +173,76 @@ int main(void) {
 	}
 }
 
+
 static void allLEDOff(){
-	P1OUT |= LED1_PIN + LED3_PIN;
+	//P1OUT |= LED1_PIN + LED3_PIN;
 	P1OUT &= ~(LED2_PIN + LED4_PIN);
 }
 static void allLEDOn(){
 	P1OUT |= LED2_PIN + LED4_PIN;
-	P1OUT &= ~(LED1_PIN + LED3_PIN);
+	//P1OUT &= ~(LED1_PIN + LED3_PIN);
+}
+
+static int smoothFilter(int prev, int curr, int coeff){
+	return ((prev/coeff*(coeff-1)) + (curr/coeff));
 }
 
 
-// interrupts from GPIO
+/*
+ * readAccel
+ * Updates 'data' struct with new accel readings.
+ * Flow (for each of x,y,z):
+ * 1. Read 2 bytes into memory
+ * 2. Construct 2 byte word and store into struct
+ */
+static void readAccel(accel_data *data){
+	char x0,x1;
+	// char y0,y1;
+	char z0,z1;
+
+	z0 = iicRead(MPU6050_ACCEL_ZOUT_L);
+	z1 = iicRead(MPU6050_ACCEL_ZOUT_H);
+	data->z = z0 + (z1 << 8);
+
+    /*
+	y0 = iicRead(MPU6050_ACCEL_YOUT_L);
+	y1 = iicRead(MPU6050_ACCEL_YOUT_H);
+	data->y = y0 + (y1 << 8);
+    */
+    
+	x0 = iicRead(MPU6050_ACCEL_XOUT_L);
+	x1 = iicRead(MPU6050_ACCEL_XOUT_H);
+	data->x = x0 + (x1 << 8);
+}
+
+
+/*
+ * Port 1 ISR
+ * Waking up from this will get the accelerometer readings updated!
+ * Flow:
+ * 1. Mask all P1 interrupts and clear interrupt flag
+ * 2. Reset the update_pitch flag to signal accelerometer reading!
+ * 3. (Accelerometer readings are updated in the state machine)
+ */
 #pragma vector=PORT1_VECTOR
 __interrupt void PORT1 (void){
 	// Disable interrupt until we're done processing the current data.
 	P1IFG &= ~ACCEL_INT;
 	P1IE &= ~ACCEL_INT;
+	_BIC_SR(LPM3_EXIT); // wake up from low power mode
+}
+
+/*
+ * Timer A0 ISR
+ * Waking up from this will get the pitch updated!
+ * Flow:
+ * 1. Set the flag
+ * 2. Reset timer
+ * 4. (Pitch will get updated in state machine next time it wakes up.)
+ */
+#pragma vector=TIMERA0_VECTOR
+__interrupt void TIMERA0(void){
+	update_pitch = 1;
+	P1OUT ^= LED1_PIN;
 	_BIC_SR(LPM3_EXIT); // wake up from low power mode
 }
