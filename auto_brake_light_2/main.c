@@ -98,9 +98,13 @@ int main(void) {
 	update_pitch=0;
 
 	// Timer setup
+    // TODO: set these up properly. 
 	CCTL0 = CCIE;                             // CCR0 interrupt enabled
+    CCTL1 = CCIE;                             // CCR1 interrupt enabled
 	CCR0 = 50000;
+    CCR1 = 2000;
 	TACTL = TASSEL_2 + MC_2 + ID_2;                  // SMCLK, contmode, /4
+    
 
 	// Disable all maskable interrupts, THEN un-mask interrupts on ACCEL_INT.
 	// This prevents jumping into the ISR immediately after un-masking.
@@ -242,7 +246,32 @@ __interrupt void PORT1 (void){
  */
 #pragma vector=TIMERA0_VECTOR
 __interrupt void TIMERA0(void){
-	update_pitch = 1;
-	P1OUT ^= LED1_PIN;
-	_BIC_SR(LPM3_EXIT); // wake up from low power mode
+    static count;   // Counts number of timer interrupts
+    
+    // TODO: move all this to main somehow!
+    
+    // Check where the interrupt came from
+    if (TAIV & CCR0_BIT){
+        // Interrupt came from capture-compare 0
+        // So increment or decrement the duty cycle!
+        if (TACCR0 >= CCR_MAX){
+            TACCR0 -= 1;    // decrease duty cycle
+        } else if (TACCR0 <= CCR_MIN){ 
+            TACCR0 += 1;    // increase duty cycle
+        }
+        
+        // Turn the LEDs on 
+        turn_all_leds_on();
+        
+        
+    } else if ((TAIV & CCR1_BIT) && (count++ > DATA_INTERVAL_COUNT)) {
+        // It's time to update the pitch.
+        update_pitch = TRUE;
+        count = 0;
+        _BIC_SR(LPM3_EXIT); // wake up from low power mode to read from accel
+    } else { 
+        turn_all_leds_off(); 
+    }
+
+	
 }
